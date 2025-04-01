@@ -1,61 +1,50 @@
 import os
-from flask import Flask, render_template, request, url_for, redirect, jsonify
+from flask import Flask, render_template, request, jsonify, redirect, url_for
 from flask_sqlalchemy import SQLAlchemy
-from sqlalchemy.sql import func
-from functools import wraps
-from token_config import VALID_TOKENS  # Import tokens from external file
+from dotenv import load_dotenv
+from basicauthmiddleware import BasicAuthMiddleware
+from models import db, Student
 
-basedir = os.path.abspath(os.path.dirname(__file__))
+# Load environment variables
+load_dotenv()
+VALID_USERNAME = os.getenv("username")
+VALID_PASSWORD = os.getenv("password")
 
+# Initialize Flask App
 app = Flask(__name__)
+app.wsgi_app = BasicAuthMiddleware(app.wsgi_app, VALID_USERNAME, VALID_PASSWORD)  # Apply Middleware
+
+# Configure Database
+basedir = os.path.abspath(os.path.dirname(__file__))
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///' + os.path.join(basedir, 'database.db')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-app.config['SECRET_KEY'] = 'your_secret_key'  # Change this to a secure key
+db.init_app(app)
 
-db = SQLAlchemy(app)
-
-def token_required(f):
-    @wraps(f)
-    def decorated(*args, **kwargs):
-        token = request.headers.get('Authorization')
-        print(f"Received Token: {token}")  # Debugging line
-        
-        if not token or not token.startswith("Bearer "):
-            return jsonify({'message': 'Unauthorized'}), 401
-        
-        token_value = token.replace("Bearer ", "").strip()
-        if token_value not in VALID_TOKENS:
-            return jsonify({'message': 'Unauthorized'}), 401
-
-        return f(*args, **kwargs)
-    return decorated
-
-class Student(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    firstname = db.Column(db.String(100), nullable=False)
-    lastname = db.Column(db.String(100), nullable=False)
-    email = db.Column(db.String(80), unique=True, nullable=False)
-    age = db.Column(db.Integer)
-    created_at = db.Column(db.DateTime(timezone=True), server_default=func.now())
-    bio = db.Column(db.Text)
-
-    def __repr__(self):
-        return f'<Student {self.firstname}>'
-
-@app.route('/')
-@token_required
+# Routes
+@app.route("/", methods=["GET"])
 def index():
+    return redirect(url_for('students'))
+
+@app.route("/hello", methods=["GET"])
+def hello():
+    user = request.environ.get("user")
+    return jsonify(message=f"Hello, {user['name']}! Hope you're doing great!")
+
+@app.route("/goodbye", methods=["GET"])
+def goodbye():
+    return redirect(url_for('students'))
+
+@app.route('/students/')
+def students():
     students = Student.query.all()
     return render_template('index.html', students=students)
 
 @app.route('/<int:student_id>/')
-@token_required
 def student(student_id):
     student = Student.query.get_or_404(student_id)
     return render_template('student.html', student=student)
 
 @app.route('/<int:student_id>/edit/', methods=['GET', 'POST'])
-@token_required
 def edit(student_id):
     student = Student.query.get_or_404(student_id)
 
@@ -67,20 +56,18 @@ def edit(student_id):
         student.bio = request.form['bio']
 
         db.session.commit()
-        return redirect(url_for('index'))
+        return redirect(url_for('students'))
 
     return render_template('edit.html', student=student)
 
 @app.route('/<int:student_id>/delete/', methods=['POST'])
-@token_required
 def delete(student_id):
     student = Student.query.get_or_404(student_id)
     db.session.delete(student)
     db.session.commit()
-    return redirect(url_for('index'))
+    return redirect(url_for('students'))
 
 @app.route('/create/', methods=['GET', 'POST'])
-@token_required
 def create():
     if request.method == 'POST':
         student = Student(
@@ -92,9 +79,12 @@ def create():
         )
         db.session.add(student)
         db.session.commit()
-        return redirect(url_for('index'))
+        return redirect(url_for('students'))
 
     return render_template('create.html')
 
-if __name__ == '__main__':
+# Run App
+if __name__ == "__main__":
+    with app.app_context():
+        db.create_all()  # Ensure database is created before running
     app.run(debug=True, port=8000)
